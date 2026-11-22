@@ -1,73 +1,208 @@
-FLASK - MYSQL - EKS DevOps Project
-==================================
+AMAZON EKS DEPLOYMENT GUIDE
+Flask + MySQL Two-Tier Application
+==============================================================================
+
+This guide walks through creating an Amazon EKS cluster and deploying the
+Flask application and MySQL database from this repository. It uses eksctl
+to provision the cluster and Kubernetes manifests in eks-manifests/.
+
+DEPLOYMENT SUMMARY
+  Application:  Flask web application
+  Database:     MySQL
+  Platform:     Amazon EKS
+  Public access: AWS LoadBalancer Service on HTTP port 80
+  Region:       ap-south-1 (change as needed)
+
+  Estimated setup time: 20-30 minutes, depending on AWS provisioning.
+  AWS charges apply while cluster resources are running. Delete the cluster
+  when you have finished.
 
 
-Launch EC2 amazon Linux 2023 , t2.micro and attach admin role
+01  PREPARE YOUR ENVIRONMENT
+------------------------------------------------------------------------------
+
+You need:
+  - An AWS account with permissions to create EKS and related AWS resources.
+  - AWS CLI installed and configured with valid credentials.
+  - Git, kubectl, and eksctl.
+  - Docker and a Docker Hub account only if you plan to publish a custom image.
+
+On an EC2 host, use an appropriately scoped IAM instance profile. Do not attach
+a broad administrator policy or store long-lived AWS access keys on the host.
+
+Verify AWS CLI access:
+
+    aws --version
+    aws sts get-caller-identity
 
 
+02  INSTALL KUBECTL AND EKSCTL
+------------------------------------------------------------------------------
 
-Install Kubectl on machine
-===========================
+The following installation commands are for Amazon Linux 2023 on an
+AMD64/x86_64 host. Use the official installation instructions for other
+operating systems or CPU architectures.
 
+Install kubectl:
 
-vi kubectl.sh
+    sudo dnf update -y
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    chmod +x kubectl
+    sudo mv kubectl /usr/local/bin/kubectl
+    kubectl version --client
 
-sudo yum update -y
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-chmod +x kubectl && sudo mv kubectl /usr/local/bin/
-kubectl version --client
+Install eksctl:
 
-curl --silent --location "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar xz -C /tmp
-sudo mv /tmp/eksctl /usr/local/bin
-eksctl version
-aws --version
-
-sh kubectl.sh
-
-Now Create EKS Cluster
-===================
-eksctl create cluster --name kunal-cluster --region ap-south-1 \
-  --node-type t3.small --nodes-min 2 --nodes-max 3
-aws eks update-kubeconfig --name kunal-cluster --region ap-south-1
-kubectl get nodes
-=====================
-
-install GIT
-=====================
-sudo yum install git -y
-git clone https://github.com/devkunaljadhav/eks-flask-mysql-project.git
-cd eks-flask-mysql-project/eks-manifests/
-
-kubectl apply -f mysql-secrets.yml -f mysql-configmap.yml -f mysql-deployment.yml -f mysql-svc.yml
-kubectl apply -f two-tier-app-deployment.yml -f two-tier-app-svc.yml
-kubectl get all
-
-kubectl get deploy
-
-=======================
-Troubleshooting
-
-kubectl get pods
-kubectl logs <pod-name>
-kubectl describe pod <pod-name>
-kubectl rollout restart deployment two-tier-app
+    curl --silent --location "https://github.com/eksctl-io/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" \
+      | tar xz -C /tmp
+    sudo mv /tmp/eksctl /usr/local/bin/eksctl
+    eksctl version
 
 
-========================
-I used direct image from my docker hub, but if you want to build your own image from application code follow this
-Own image build karaycha asel tar
+03  CREATE THE EKS CLUSTER
+------------------------------------------------------------------------------
 
-sudo yum install -y docker
-sudo systemctl start docker
-sudo usermod -aG docker $USER   # logout/login nantar
-cd ~/eks-flask-mysql-project
-docker build -t kunaljadhav1625/eks-flask-mysql-project:latest .
-docker login
-docker push kunaljadhav1625/eks-flask-mysql-project:latest
+These example commands use the cluster name kunal-cluster and the ap-south-1
+region. Use the same cluster name and region in later commands.
 
-================
-Cleanup (must!)
-kubectl delete -f two-tier-app-svc.yml -f two-tier-app-deployment.yml
-kubectl delete -f mysql-svc.yml -f mysql-deployment.yml
-eksctl delete cluster --name kunal-cluster --region ap-south-1
+    eksctl create cluster \
+      --name kunal-cluster \
+      --region ap-south-1 \
+      --node-type t3.small \
+      --nodes-min 2 \
+      --nodes-max 3
 
+Cluster creation can take several minutes. Configure kubectl and verify that
+the worker nodes are ready:
+
+    aws eks update-kubeconfig --name kunal-cluster --region ap-south-1
+    kubectl get nodes
+
+
+04  GET THE APPLICATION
+------------------------------------------------------------------------------
+
+Clone the repository and move into the Kubernetes manifest directory:
+
+    git clone https://github.com/devkunaljadhav/eks-flask-mysql-two-tier-deployment.git
+    cd eks-flask-mysql-two-tier-deployment/eks-manifests
+
+
+05  OPTIONAL: BUILD AND PUBLISH A CUSTOM IMAGE
+------------------------------------------------------------------------------
+
+Skip this section to use the image already set in
+eks-manifests/two-tier-app-deployment.yml.
+
+If you want to build your own image, return to the repository root, build it,
+and push it to Docker Hub:
+
+    cd ..
+    docker build -t <dockerhub-user>/eks-flask-mysql-project:latest .
+    docker login
+    docker push <dockerhub-user>/eks-flask-mysql-project:latest
+
+Edit eks-manifests/two-tier-app-deployment.yml and replace its current image
+with the image you pushed:
+
+    image: <dockerhub-user>/eks-flask-mysql-project:latest
+
+Return to the manifest directory:
+
+    cd eks-manifests
+
+
+06  DEPLOY THE APPLICATION
+------------------------------------------------------------------------------
+
+Apply the database resources first, followed by the Flask application:
+
+    kubectl apply -f mysql-secrets.yml
+    kubectl apply -f mysql-configmap.yml
+    kubectl apply -f mysql-deployment.yml
+    kubectl apply -f mysql-svc.yml
+    kubectl apply -f two-tier-app-deployment.yml
+    kubectl apply -f two-tier-app-svc.yml
+
+
+07  VERIFY AND OPEN THE APPLICATION
+------------------------------------------------------------------------------
+
+Check the deployments and wait for both workloads to become ready:
+
+    kubectl get deployments
+    kubectl rollout status deployment/mysql
+    kubectl rollout status deployment/two-tier-app
+    kubectl get pods
+
+Watch for the external address assigned to the application Service:
+
+    kubectl get service two-tier-app-service --watch
+
+When EXTERNAL-IP displays a hostname or address, open it in a browser. The
+application is exposed over HTTP on port 80. Press Ctrl+C to stop watching.
+
+
+08  TROUBLESHOOTING
+------------------------------------------------------------------------------
+
+Inspect pod status and events:
+
+    kubectl get pods
+    kubectl describe pod <pod-name>
+    kubectl get events --sort-by=.metadata.creationTimestamp
+
+Inspect container logs:
+
+    kubectl logs <pod-name>
+    kubectl logs <pod-name> --previous
+
+Inspect Services and endpoints:
+
+    kubectl get services
+    kubectl get endpoints
+
+Restart the Flask application after changing its configuration:
+
+    kubectl rollout restart deployment/two-tier-app
+    kubectl rollout status deployment/two-tier-app
+
+Common issues:
+  - MySQL connection errors: verify that the MySQL pod is ready and the mysql
+    Service exists (kubectl get pods,services).
+  - MySQL authentication errors: confirm that the credentials configured for
+    Flask match the database credentials in the manifests.
+  - External address remains pending: check AWS permissions, subnet
+    configuration, and LoadBalancer provisioning in the AWS Console.
+  - Updated image is not running: update the image in the Deployment manifest,
+    then apply it again and check the rollout status.
+
+
+09  CLEAN UP AWS RESOURCES
+------------------------------------------------------------------------------
+
+Run the following commands from the repository root to remove the application
+resources and cluster. This permanently deletes the cluster and its workloads.
+
+    kubectl delete -f eks-manifests/two-tier-app-svc.yml
+    kubectl delete -f eks-manifests/two-tier-app-deployment.yml
+    kubectl delete -f eks-manifests/mysql-svc.yml
+    kubectl delete -f eks-manifests/mysql-deployment.yml
+    kubectl delete -f eks-manifests/mysql-configmap.yml
+    kubectl delete -f eks-manifests/mysql-secrets.yml
+
+    eksctl delete cluster --name kunal-cluster --region ap-south-1
+
+Check the AWS Console for any remaining billable resources. The sample MySQL
+Deployment has no persistent volume, so its data is not retained when its pod
+is removed.
+
+
+SECURITY
+------------------------------------------------------------------------------
+
+The sample manifests use demonstration credentials, and the Flask application
+starts with debug mode enabled. This setup is for learning only; do not expose
+it to untrusted users or use it in production. A production deployment should
+use managed secrets, persistent/managed database storage, HTTPS, and a
+production WSGI server.
